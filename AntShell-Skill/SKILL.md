@@ -1,9 +1,9 @@
 ---
 name: antshell
-description: AntShell 本地 MCP 接口使用手册 — 帮 AI 客户端通过本地 HTTP 驱动 AntShell 的 SSH / FTP / 本地终端 / 文件操作。在以下场景必须调用本 skill:(1) 用户提到 AntShell、SSH/FTP 终端自动化、本机跑命令、本地操作远端服务器;(2) 用户希望 AI 替自己操作 AntShell 已保存的连接、打开新终端会话(SSH/FTP/本地)、读终端输出、发命令、读写远端文件、上传下载;(3) 用户希望与 AntShell 软件界面同步看到 AI 在做什么(打开哪个 session、执行什么命令、文件怎么改);(4) 用户提供 AntShell 的 HTTP 地址(默认 http://127.0.0.1:4180)希望 AI 通过它做事。即使用户没明说"用 MCP",只要涉及 AntShell 的能力调用,就先用本 skill 查协议。
+description: AntShell 本地 MCP 接口使用手册 — 帮 AI 客户端通过本地 HTTP 驱动 AntShell 的 SSH / FTP / 本地终端 / 文件操作 / 软件设置。在以下场景必须调用本 skill:(1) 用户提到 AntShell、SSH/FTP 终端自动化、本机跑命令、本地操作远端服务器;(2) 用户希望 AI 替自己操作 AntShell 已保存的连接、打开新终端会话(SSH/FTP/本地)、读终端输出、发命令、读写远端文件、上传下载、修改软件设置(界面/侧边AI/本地工具链);(3) 用户希望与 AntShell 软件界面同步看到 AI 在做什么(打开哪个 session、执行什么命令、文件怎么改、设置怎么改);(4) 用户提供 AntShell 的 HTTP 地址(默认 http://127.0.0.1:4180)希望 AI 通过它做事。即使用户没明说"用 MCP",只要涉及 AntShell 的能力调用,就先用本 skill 查协议。
 ---
 
-# AntShell Skill (v3)
+# AntShell Skill (v4)
 
 AntShell 是一个跨平台(macOS / Windows / Linux)的 SSH/FTP/本地终端桌面工作台(Electron + Vue 3),内置一个**本地 HTTP MCP 接口**供外部 AI 工具驱动。本 skill 是这个接口的完整使用手册——AI 客户端通过 curl 调对应端点即可。
 
@@ -11,7 +11,7 @@ AntShell 是一个跨平台(macOS / Windows / Linux)的 SSH/FTP/本地终端桌�
 - AntShell 当前必须**已经在用户本机运行**且 **MCP 开关为已开启**。如果没开,引导用户去 AntShell → 设置 → MCP → 开启。
 - 接口**仅监听 127.0.0.1**,不会对外暴露,不需要鉴权。
 - 端口用户可配置(默认 4180),从 `GET /v1/health` 的 `data.port` 读实际值,不要硬编码。
-- 端点全部使用统一响应壳 `{ ok: true, data: ... }` / `{ ok: false, error: { code, message } }`,HTTP 状态码 200/400/404/409/413/500。
+- 端点全部使用统一响应壳 `{ ok: true, data: ... }` / `{ ok: false, error: { code, message } }`,HTTP 状态码 200/400/404/409/413/500/402。
 - 操作 AntShell 的 session 后,AntShell 软件界面**自动跳到对应 session 窗口并显示在 xterm**——AI 操作对用户完全可见,不要"悄悄"操作。
 
 ---
@@ -35,7 +35,7 @@ curl -s http://127.0.0.1:4180/v1/health
 
 ---
 
-## 第二步:33 个端点(单一来源)
+## 第二步:35 个端点(单一来源)
 
 接口分 5 组,以下 URL 都用 `${base}` 代替 `http://127.0.0.1:${port}`。
 
@@ -93,6 +93,55 @@ FTP 路径上传的 `options.conflictPolicy` 支持 `ask`、`cancel`、`coexist`
 | POST | `${base}/v1/transfers/{id}/cancel` | 取消单项传输 |
 | POST | `${base}/v1/transfers/cancel-all` | 终止全部传输及待执行批次 |
 | POST | `${base}/v1/transfers/clear` | 清理已完成、失败和取消记录 |
+
+### Settings (2)
+| Method | Path | 用途 | Body |
+|---|---|---|---|
+| GET | `${base}/v1/settings` | 读取当前设置(界面/侧边AI/本地工具链)。`apiKey` 响应中脱敏为 `sk-***xxxx` 形式 | — |
+| PUT | `${base}/v1/settings` | **部分更新**设置,写盘、设置页、实际运行效果三方实时同步 | 见下方 |
+
+**PUT /v1/settings body**(三段均为可选,均未传字段保持当前值;`tools` 数组为整段替换):
+
+```jsonc
+{
+  "ui": {
+    "topNavAlign": "left" | "center" | "right",  // 顶部选项位置
+    "darkMode": "system" | "off" | "on",          // 暗夜模式(改后主题即时生效)
+    "preventSleep": true | false                   // 阻止屏幕息屏(不影响系统休眠)
+  },
+  "ai": {
+    "responseFormat": "openai-chat" | "openai-responses" | "anthropic",
+    "baseUrl": "https://api.example.com/v1",
+    "apiKey": "sk-xxx",
+    "model": "gpt-4o",
+    "toolCalling": true | false,                   // Agent 模式开关
+    "streaming": true | false,
+    "mockMode": true | false,                      // 离线假数据测试
+    "systemPrompt": ""                             // 追加到内置系统提示之后
+  },
+  "tools": [
+    { "id": "可选,有则更新无则新增", "name": "Claude", "commandPath": "claude", "args": "" }
+  ]
+}
+```
+
+**注意**:
+- `mcpEnabled` / `mcpPort` **不允许**通过此接口修改,请使用 AntShell 的 MCP 开关(设置 → MCP)。误传会返回 `400 bad_request`。
+- 未激活用户若误传 `mcpEnabled:true`,返回 `402 license_required`,提示用户先激活。
+- `PUT` 是**部分合并**:只需传要改的段和字段,未传字段保留当前值(但 `tools` 数组整段替换,不传则保留)。
+- 修改后 AntShell 设置页、配置文件 (`settings.json`)、实际行为(主题/息屏/AI/工具链下拉)**同步即时生效**,无需重启。
+
+**示例**:
+```bash
+# 1) 读取当前配置
+curl -s ${base}/v1/settings
+# 2) 切换暗夜模式
+curl -s -X PUT ${base}/v1/settings -H 'Content-Type: application/json' -d '{"ui":{"darkMode":"on"}}'
+# 3) 更换 AI 模型
+curl -s -X PUT ${base}/v1/settings -H 'Content-Type: application/json' -d '{"ai":{"model":"gpt-4o"}}'
+# 4) 新增一条本地工具链
+curl -s -X PUT ${base}/v1/settings -H 'Content-Type: application/json' -d '{"tools":[{"name":"Claude","commandPath":"claude","args":""}]}'
+```
 
 ---
 
@@ -158,7 +207,8 @@ curl -s -X POST http://127.0.0.1:4180/v1/sessions/<sid>/files/download-many -H '
 
 ## 错误处理
 
-- `400 bad_request` — 参数缺失或格式错误(消息含「不能为空」「必须是 1-65535」「缺少 path 字段」)
+- `400 bad_request` — 参数缺失或格式错误(消息含「不能为空」「必须是 1-65535」「缺少 path 字段」「mcpEnabled/mcpPort 不允许通过 settings 接口修改」)
+- `402 license_required` — 未激活用户试图开启 MCP(`mcpEnabled:true`),提示先激活
 - `404 not_found` — 资源不存在(连接/会话/路径/路由)
 - `409 conflict` — 冲突(目前少用)
 - `413 payload_too_large` — base64 请求体超过 32MB,改用本地路径上传
