@@ -3,7 +3,7 @@ name: antshell
 description: AntShell 本地 MCP 接口使用手册 — 帮 AI 客户端通过本地 HTTP 驱动 AntShell 的 SSH / FTP / 本地终端 / 文件操作 / 软件设置。在以下场景必须调用本 skill:(1) 用户提到 AntShell、SSH/FTP 终端自动化、本机跑命令、本地操作远端服务器;(2) 用户希望 AI 替自己操作 AntShell 已保存的连接、打开新终端会话(SSH/FTP/本地)、读终端输出、发命令、读写远端文件、上传下载、修改软件设置(界面/侧边AI/本地工具链);(3) 用户希望与 AntShell 软件界面同步看到 AI 在做什么(打开哪个 session、执行什么命令、文件怎么改、设置怎么改);(4) 用户提供 AntShell 的 HTTP 地址(默认 http://127.0.0.1:4180)希望 AI 通过它做事。即使用户没明说"用 MCP",只要涉及 AntShell 的能力调用,就先用本 skill 查协议。
 ---
 
-# AntShell Skill (v4)
+# AntShell Skill (v5)
 
 AntShell 是一个跨平台(macOS / Windows / Linux)的 SSH/FTP/本地终端桌面工作台(Electron + Vue 3),内置一个**本地 HTTP MCP 接口**供外部 AI 工具驱动。本 skill 是这个接口的完整使用手册——AI 客户端通过 curl 调对应端点即可。
 
@@ -12,7 +12,7 @@ AntShell 是一个跨平台(macOS / Windows / Linux)的 SSH/FTP/本地终端桌�
 - 接口**仅监听 127.0.0.1**,不会对外暴露,不需要鉴权。
 - 端口用户可配置(默认 4180),从 `GET /v1/health` 的 `data.port` 读实际值,不要硬编码。
 - 端点全部使用统一响应壳 `{ ok: true, data: ... }` / `{ ok: false, error: { code, message } }`,HTTP 状态码 200/400/404/409/413/500/402。
-- 操作 AntShell 的 session 后,AntShell 软件界面**自动跳到对应 session 窗口并显示在 xterm**——AI 操作对用户完全可见,不要"悄悄"操作。
+- 操作 AntShell 的 session 后,AntShell 软件界面会同步激活对应会话。SSH 命令及输出显示在 xterm；SFTP/FTP 文件操作显示在文件区和传输中心。不要伪造终端命令来表现文件操作。
 
 ---
 
@@ -35,7 +35,7 @@ curl -s http://127.0.0.1:4180/v1/health
 
 ---
 
-## 第二步:35 个端点(单一来源)
+## 第二步:36 个端点(单一来源)
 
 接口分 5 组,以下 URL 都用 `${base}` 代替 `http://127.0.0.1:${port}`。
 
@@ -52,7 +52,7 @@ curl -s http://127.0.0.1:4180/v1/health
 | PUT    | `${base}/v1/connections/{id}` | 修改连接 | 同上(覆盖写) |
 | DELETE | `${base}/v1/connections/{id}` | 删除连接 | — |
 
-### Sessions (7)
+### Sessions (8)
 | Method | Path | 用途 | Body |
 |---|---|---|---|
 | POST | `${base}/v1/sessions` | 打开会话 | `{connectionId}` (SSH/FTP) **或** `{options:{command,args,cwd}}` (本地) |
@@ -61,6 +61,7 @@ curl -s http://127.0.0.1:4180/v1/health
 | GET  | `${base}/v1/sessions/{id}/output?since=N` | 增量读输出(256KB ring buffer) | — |
 | POST | `${base}/v1/sessions/{id}/input` | 写输入字节 | `{data: "<base64>"}` |
 | POST | `${base}/v1/sessions/{id}/exec` | 执行命令(SSH 非零退出码报错 / FTP raw) | `{command, timeout}` |
+| POST | `${base}/v1/sessions/{id}/reconnect` | 原位重连 SSH/FTP，会话 ID 保持不变 | — |
 | POST | `${base}/v1/sessions/{id}/close` | 关闭会话 | — |
 
 ### Files (17)
@@ -147,6 +148,8 @@ curl -s -X PUT ${base}/v1/settings -H 'Content-Type: application/json' -d '{"too
 
 ## 第三步:典型工作流
 
+执行会话操作前先 `GET /v1/sessions` 获取真实 sessionId，不要根据连接名或历史响应猜测。遇到网络波动、`shell closed` 或暂时断线时，优先调用原位重连；只有重连明确失败且用户仍需继续时才关闭并新建会话。
+
 ### 1. SSH/FTP 工作流
 ```bash
 # 1) 列连接
@@ -157,7 +160,9 @@ curl -s -X POST http://127.0.0.1:4180/v1/sessions -H 'Content-Type: application/
 curl -s 'http://127.0.0.1:4180/v1/sessions/<sid>/output?since=0'
 # 4) 一次性命令(SSH 非零退出码返回错误,FTP 走 raw)
 curl -s -X POST http://127.0.0.1:4180/v1/sessions/<sid>/exec -H 'Content-Type: application/json' -d '{"command":"whoami","timeout":5000}'
-# 5) 关闭
+# 5) 临时断线时原位重连，成功后继续使用同一个 sid
+curl -s -X POST http://127.0.0.1:4180/v1/sessions/<sid>/reconnect
+# 6) 关闭
 curl -s -X POST http://127.0.0.1:4180/v1/sessions/<sid>/close
 ```
 
@@ -196,7 +201,15 @@ curl -s -X POST http://127.0.0.1:4180/v1/sessions/<sid>/files/download-many -H '
 - local: 跳到「本地终端」视图,激活该终端
 
 每次 `POST /v1/sessions/{id}/exec`(SSH) 成功:
-- 命令文本**和** stdout **同时**写入 xterm,用户看到 AI 操作的完整记录
+- 真实命令以终端提示行形式显示，stdout/stderr 随后显示；不会添加多余的 `[MCP]` 前缀
+
+每次 `POST /v1/sessions/{id}/reconnect` 成功:
+- 原位重连 SSH/FTP 标签页并保留原 sessionId，后续请求继续使用该 ID
+- 重连失败时旧 SSH 会话不会被成功重连结果错误替换；应向用户报告接口返回的具体原因
+
+每次文件和传输操作:
+- 目录变化刷新文件区；上传、下载、预览拉取和文本保存同步显示在传输中心
+- 文件操作不伪装成 shell 命令，也不向 xterm 写入 `[MCP]`、`[FTP]` 等噪声标签
 
 每次 `POST /v1/sessions/{id}/close` 触发:
 - AntShell 自动从 UI 移除该 session 标签、关闭 xterm、清空文件列表、回到「连接」视图
@@ -222,8 +235,9 @@ curl -s -X POST http://127.0.0.1:4180/v1/sessions/<sid>/files/download-many -H '
 
 如果用户**刚装好 AntShell**,AI 客户端还没装这个 skill:
 1. 让用户打开 AntShell → 顶部 MCP tab(或设置 → MCP) → 点「安装 Skill」
-2. AntShell 会从 `assets/antshell.zip` 抽取并安装到 `~/.claude/skills/antshell/`
-3. 重启 AI 客户端后本 skill 自动可用
+2. AntShell 会从 `assets/antshell.zip` 抽取，并按用户选择安装到 Claude Code、Codex CLI 或项目 Skill 目录
+3. 重启对应 AI 客户端后本 skill 自动可用
 4. 也可让用户复制 MCP tab 里的「复制提示词」按钮,把完整协议交给 AI
+5. 内置安装与兜底均失败时，从 https://github.com/Mutantcat-Working-Group/AntShell-Skill 下载
 
 如果接口停止,提示用户重新启用(MCP 开关)。
