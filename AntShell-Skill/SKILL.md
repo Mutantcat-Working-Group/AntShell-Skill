@@ -5,6 +5,8 @@ description: AntShell 本地 MCP 接口使用手册 — 帮 AI 客户端通过�
 
 # AntShell Skill (v5)
 
+> 由异猫工作群（mutantcat.org）发行 · GitHub: https://github.com/Mutantcat-Working-Group
+
 AntShell 是一个跨平台(macOS / Windows / Linux)的 SSH/FTP/本地终端桌面工作台(Electron + Vue 3),内置一个**本地 HTTP MCP 接口**供外部 AI 工具驱动。本 skill 是这个接口的完整使用手册——AI 客户端通过 curl 调对应端点即可。
 
 **核心事实**:
